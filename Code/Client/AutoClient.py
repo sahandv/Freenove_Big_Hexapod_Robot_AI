@@ -1,11 +1,15 @@
 import threading
 import time
 import logging
+import cv2
 from Client import Client
 from Command import COMMAND as cmd
+from Thread import stop_thread
+import os
+import matplotlib.pyplot as plt
 
 # Set up logging configuration
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.WARN, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class AutoClient:
     def __init__(self, ip):
@@ -17,9 +21,22 @@ class AutoClient:
         self.current_speed = 4
         self.angle_size = 15
         self.sonar_distance = None  # Initialize with a default value
+        self.image_retrieve_thread = None  # Image retrieval thread
+        self.video_running = False
+        self.current_frame = None
         self.power_value = ["0", "0"]
         self.head_defailt_angle_x = 70
-        
+        self.image = None  # Placeholder for the retrieved image data
+        self.video_flag = False  # Flag indicating when a new image is available
+        self.frame_count = 0  # Counter for frame file naming
+        # Set directory for saving images
+        self.save_directory = "frames"
+        self.fig, self.ax = plt.subplots()  # Matplotlib figure and axis
+        self.image_display = None  # Placeholder for the displayed image in the plot
+        self.new_frame_event = threading.Event()
+        if not os.path.exists(self.save_directory):
+            os.makedirs(self.save_directory)
+            
     def connect(self):
         """Establish the client connection and start the receive thread."""
         if not self.running:
@@ -27,6 +44,8 @@ class AutoClient:
             self.running = True
             self.receive_thread = threading.Thread(target=self.receive_instruction)#, daemon=True)
             self.receive_thread.start()
+            self.videoThread=threading.Thread(target=self.client.receiving_video,args=(self.ip,self))
+            self.videoThread.start()
             logging.info(f"Connected to {self.ip}") 
             # self.start_battery_timer()
             # self.request_sonar_data()
@@ -42,6 +61,18 @@ class AutoClient:
         self.running = False  # Signal thread to stop
         if self.receive_thread and self.receive_thread.is_alive():
             self.receive_thread.join()  # Wait for the receive thread to stop
+        if self.videoThread and self.videoThread.is_alive():
+            self.videoThread.join()  # Stop video retrieval thread
+        
+        try:
+            stop_thread(self.videoThread)
+        except Exception as e:
+            logging.error(e)
+        try:
+            stop_thread(self.receive_thread)
+        except Exception as e:
+            logging.error(e)
+        
         self.client.turn_off_client()  # Close the client connection
         logging.info("Disconnected")
         
@@ -119,6 +150,45 @@ class AutoClient:
         self.client.send_data(command)
         logging.debug("Sonar data request sent.")
 
+    # Video stream methods
+    def vide_stream(self, show=False, save=False):
+        """Display frames with matplotlib and save to disk."""
+        while self.running and self.video_running:
+            self.new_frame_event.wait()
+            try:
+                if show:
+                    # Display with matplotlib
+                    if self.image_display is None:
+                        self.image_display = self.ax.imshow(self.client.image)
+                    else:
+                        self.image_display.set_data(self.client.image)                    
+                    plt.pause(0.01)  # Small pause to allow for update
+
+                if save:
+                    # Save to disk
+                    file_path = os.path.join(self.save_directory, f"frame_{self.frame_count}.png")
+                    cv2.imwrite(file_path, self.client.image)
+                    logging.info(f"Saved and displayed frame {self.frame_count} to {file_path}")
+                self.frame_count += 1
+                self.client.video_flag = True
+                self.new_frame_event.clear()
+            except Exception as e:
+                logging.error(f"Failed to save or display frame: {e}")
+            
+    def start_video_stream(self, show=False, save=True):
+        if self.video_running:
+            logging.info("Video stream already running.")
+            return
+        else:
+            self.video_running = True
+            self.vide_stream(show=show, save=save)
+        
+    def stop_video_stream(self):
+        self.video_running = False
+        logging.info("Video stream stopped.")
+    
+    
+    # Physical movement methods
     def send_move_command(self, x, y, angle=0):
         """Send a movement command to the client."""
         command = f"{cmd.CMD_MOVE}#1#{x}#{y}#{self.current_speed}#{angle}\n"
@@ -202,8 +272,8 @@ if __name__ == "__main__":
             user_input = input("Enter command or 'exit' to disconnect: ")
             if user_input.lower() == 'exit':
                 client.disconnect()
-                break
-            # Map user input to commands
+            # if user_input == 'connect':
+            #     client.connect()
             if user_input == 'forward':
                 client.move_forward()
             elif user_input == 'left':
@@ -231,8 +301,23 @@ if __name__ == "__main__":
             elif "headx_" in user_input:
                 angle = int(user_input.replace("headx_", ""))
                 client.headLeftAndRightAdjusted(angle)
+            elif user_input == 'start_video':
+                client.start_video_stream()
+                time.sleep(10)
+                client.stop_video_stream()
+            elif user_input == 'stop_video':
+                client.stop_video_stream()
+            elif user_input == 'get_frame':
+                frame = client.refresh_image()
+                if frame is not None:
+                    # Process the frame for object detection or display
+                    logging.info("Frame received for processing")
+                    # Add object detection processing here if needed
+                else:
+                    logging.info("No frame available")
             else:
                 logging.warning("Unknown command.")
+                
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt detected")
         client.disconnect()
