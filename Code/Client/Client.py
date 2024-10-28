@@ -5,6 +5,7 @@ import copy
 import socket
 import struct
 import threading
+import logging
 from PID import *
 from Face import *
 import numpy as np
@@ -12,6 +13,7 @@ from Thread import *
 import multiprocessing
 from PIL import Image, ImageDraw
 from Command import COMMAND as cmd
+# logging.basicConfig(level=logging.WARN, format='%(asctime)s - %(levelname)s - %(message)s')
 class Client:
     def __init__(self):
         self.face=Face()
@@ -20,7 +22,7 @@ class Client:
         self.video_flag=True
         self.fece_id=False
         self.fece_recognition_flag = False
-        self.image=''
+        self.image=''        
     def turn_on_client(self,ip):
         self.client_socket1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -44,7 +46,7 @@ class Client:
             except:  
                 bValid = False
         return bValid
-    def receiving_video(self,ip):
+    def receiving_video(self,ip,client_instance):
         try:
             self.client_socket.connect((ip, 8002))
             self.connection = self.client_socket.makefile('rb')
@@ -62,15 +64,16 @@ class Client:
                         if self.fece_id == False and self.fece_recognition_flag:
                             self.face.face_detect(self.image)
                         self.video_flag=False
+                        client_instance.new_frame_event.set()
             except BaseException as e:
-                print (e)
+                logging.error(e)
                 break
     def send_data(self,data):
         if self.tcp_flag:
             try:
                 self.client_socket1.send(data.encode('utf-8'))
             except Exception as e:
-                print(e)
+                logging.error(e)
     def receive_data(self):
         data=""
         data=self.client_socket1.recv(1024).decode('utf-8')
